@@ -35,6 +35,10 @@ GenZ Healthcare is an AI-powered healthcare assistant designed to interact with 
 - Siddharth Hiriyan
 - Tanvi Shekhar Sawant 
 
+## Project Workflow Video
+Check out our project workflow in action by watching the video:
+[Watch Video](https://drive.google.com/file/d/1TpEK3a_ALANkpAfgI5Uq4cPSoL69ebTp/view?usp=drive_link)
+
 ## Note
 Ensure that you have Python installed on your system and the necessary dependencies are installed before running the application.
 
