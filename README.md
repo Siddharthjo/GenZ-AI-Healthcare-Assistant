@@ -33,7 +33,11 @@ GenZ Healthcare is an AI-powered healthcare assistant designed to interact with 
 
 ## Team Members
 - Siddharth Hiriyan
-- Tanvi Shekhar Sawant 
+- Tanvi Shekhar Sawant
+- Pranesh Sivakumar
+- Shreejit
+- Deepak S
+  
 
 ## Project Workflow Video
 Check out our project workflow in action by watching the video:
