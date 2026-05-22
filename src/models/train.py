@@ -48,13 +48,16 @@ def train_and_compare(data_path='dataset.xlsx', save_dir='model'):
     X, y, mlb, le, df = preprocess(data_path)
     print(f"  {X.shape[0]} samples | {X.shape[1]} symptom features | {len(le.classes_)} diseases")
 
-    # Drop classes with only 1 sample — cannot split
+    # Keep full data for final retraining; filter only for the train/test split
+    X_full, y_full = X.copy(), y.copy()
+
     unique, counts = np.unique(y, return_counts=True)
     valid_mask = np.isin(y, unique[counts >= 2])
     X, y = X[valid_mask], y[valid_mask]
     dropped = (counts < 2).sum()
     if dropped:
-        print(f"  Dropped {dropped} single-sample classes from split (kept for full-data training)")
+        print(f"  Dropped {dropped} single-sample classes from evaluation split "
+              f"(all {len(le.classes_)} classes used for final training)")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
@@ -89,8 +92,8 @@ def train_and_compare(data_path='dataset.xlsx', save_dir='model'):
     best_model = results[best_name]['model']
     print(f"Best model: {best_name} (test acc {results[best_name]['test_acc']:.4f})")
 
-    # Retrain best model on full dataset for deployment
-    best_model.fit(X, y)
+    # Retrain best model on FULL dataset (all 72 classes) for deployment
+    best_model.fit(X_full, y_full)
 
     os.makedirs(save_dir, exist_ok=True)
     joblib.dump(best_model, os.path.join(save_dir, 'best_model.joblib'))

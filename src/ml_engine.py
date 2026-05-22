@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -89,6 +90,54 @@ def get_disease_symptoms(disease_name: str) -> tuple[bool, list[str] | str]:
         if scores[i] == max_score:
             matched_symptoms.update(df.iloc[i]['Symptoms'].split(','))
     return True, sorted(s.strip() for s in matched_symptoms if s.strip())
+
+
+_explainer = None  # lazy-init (TreeExplainer takes ~1s to build)
+
+
+def explain_prediction(symptom_list: list[str], top_n: int = 6) -> dict:
+    """
+    Return SHAP-based explanation for which symptoms most influenced the prediction.
+
+    Positive shap_value → symptom supports the diagnosis.
+    Negative shap_value → symptom works against it (expected but absent, or misleading).
+    """
+    if clf is None:
+        return {'error': 'Model not loaded — run src/models/train.py first'}
+
+    global _explainer
+    if _explainer is None:
+        import shap
+        _explainer = shap.TreeExplainer(clf)
+
+    matched = [matcher.match(s.strip()) for s in symptom_list if s.strip()]
+    X = mlb.transform([matched])
+    y_pred = clf.predict(X)[0]
+    disease = le.inverse_transform([y_pred])[0]
+
+    import shap
+    sv = _explainer.shap_values(X)           # (n_samples, n_features, n_clf_classes)
+    model_class_idx = int(np.where(clf.classes_ == y_pred)[0][0])
+    sv_for_pred = sv[0, :, model_class_idx]  # (n_features,)
+
+    top_idx = np.argsort(np.abs(sv_for_pred))[::-1][:top_n]
+    contributors = [
+        {
+            'symptom': mlb.classes_[i],
+            'shap_value': round(float(sv_for_pred[i]), 4),
+            'direction': 'supports' if sv_for_pred[i] > 0 else 'against',
+        }
+        for i in top_idx
+    ]
+
+    return {
+        'disease': disease,
+        'top_contributors': contributors,
+        'note': (
+            'Positive SHAP values push the model toward this diagnosis; '
+            'negative values push against it.'
+        ),
+    }
 
 
 def get_disease_info(keywords: str) -> str:
