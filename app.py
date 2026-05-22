@@ -11,9 +11,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import msgConstant as msgCons
 import numpy as np
 import pandas as pd
-from joblib import load
+import joblib
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+from src.data.preprocess import get_all_symptoms, preprocess
+from src.data.symptom_matcher import SemanticSymptomMatcher
 
 load_dotenv()
 
@@ -36,6 +39,26 @@ class user(db.Model):
     email = db.Column(db.String(120))
     password = db.Column(db.String(256))
 
+
+# ── ML artefacts (loaded once at startup) ─────────────────────────────────────
+
+df = pd.read_excel('dataset.xlsx')
+
+_MODEL_DIR = 'model'
+_clf = _mlb = _le = None
+
+if all(os.path.exists(os.path.join(_MODEL_DIR, f))
+       for f in ('best_model.joblib', 'symptom_encoder.joblib', 'disease_encoder.joblib')):
+    _clf = joblib.load(os.path.join(_MODEL_DIR, 'best_model.joblib'))
+    _mlb = joblib.load(os.path.join(_MODEL_DIR, 'symptom_encoder.joblib'))
+    _le  = joblib.load(os.path.join(_MODEL_DIR, 'disease_encoder.joblib'))
+
+_all_symptoms = get_all_symptoms(df)
+_matcher = SemanticSymptomMatcher(_all_symptoms)
+print(f"Symptom matcher backend: {_matcher.backend_name}")
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -96,66 +119,60 @@ def register():
     return render_template("register.html")
 
 
-# Load dataset at startup
-df = pd.read_excel('dataset.xlsx')
+# ── ML helpers ─────────────────────────────────────────────────────────────────
 
+def predict_disease_from_symptom(symptom_list: list[str]) -> tuple[str, str]:
+    """
+    Returns (html_response, disease_name).
 
-def predict_symptom(user_input, symptom_list):
-    user_input_tokens = user_input.lower().replace("_", " ").split()
-    similarity_scores = []
-    for symptom in symptom_list:
-        symptom_tokens = symptom.lower().replace("_", " ").split()
-        token_set = set(user_input_tokens + symptom_tokens)
-        count_vector = np.zeros((2, len(token_set)))
-        for i, token in enumerate(token_set):
-            count_vector[0][i] = user_input_tokens.count(token)
-            count_vector[1][i] = symptom_tokens.count(token)
-        similarity = cosine_similarity(count_vector)[0][1]
-        similarity_scores.append(similarity)
-    return symptom_list[int(np.argmax(similarity_scores))]
+    Uses the trained classifier when artefacts are present; falls back to
+    cosine-similarity text matching on the raw dataset otherwise.
+    """
+    # Normalise user symptoms via semantic matcher
+    matched = [_matcher.match(s.strip()) for s in symptom_list if s.strip()]
 
-
-def predict_disease_from_symptom(symptom_list):
-    vectorizer = CountVectorizer()
-    X = vectorizer.fit_transform(df['Symptoms'])
-    user_X = vectorizer.transform([', '.join(symptom_list)])
-    similarity_scores = cosine_similarity(X, user_X)
-
-    max_score = similarity_scores.max()
-    max_indices = similarity_scores.argmax(axis=0)
-    matched_diseases = set()
-    for i in max_indices:
-        if similarity_scores[i] == max_score:
-            matched_diseases.add(df.iloc[i]['Disease'])
-
-    if not matched_diseases:
-        return "<b>No matching diseases found</b>", ""
-    if len(matched_diseases) == 1:
-        disease = list(matched_diseases)[0]
+    if _clf is not None:
+        X = _mlb.transform([matched])
+        y_pred = _clf.predict(X)
+        disease = _le.inverse_transform(y_pred)[0]
         details = getDiseaseInfo(disease)
         return f"<b>{disease}</b><br>{details}", disease
-    return "The most likely diseases are<br><b>" + ', '.join(matched_diseases) + "</b>", ""
+
+    # Fallback: cosine similarity on symptom strings
+    vectorizer = CountVectorizer()
+    X_corpus = vectorizer.fit_transform(df['Symptoms'])
+    user_X = vectorizer.transform([', '.join(matched)])
+    scores = cosine_similarity(X_corpus, user_X)
+    max_score = scores.max()
+    max_indices = scores.argmax(axis=0)
+    diseases_found = {df.iloc[i]['Disease'] for i in max_indices if scores[i] == max_score}
+
+    if not diseases_found:
+        return "<b>No matching diseases found</b>", ""
+    if len(diseases_found) == 1:
+        disease = list(diseases_found)[0]
+        details = getDiseaseInfo(disease)
+        return f"<b>{disease}</b><br>{details}", disease
+    return "The most likely diseases are<br><b>" + ', '.join(diseases_found) + "</b>", ""
 
 
-def get_symtoms(user_disease):
+def get_symtoms(user_disease: str) -> tuple[bool, set | str]:
     vectorizer = CountVectorizer()
     X = vectorizer.fit_transform(df['Disease'])
     user_X = vectorizer.transform([user_disease])
-    similarity_scores = cosine_similarity(X, user_X)
-
-    max_score = similarity_scores.max()
+    scores = cosine_similarity(X, user_X)
+    max_score = scores.max()
     if max_score < 0.7:
         return False, "No matching diseases found"
-
-    max_indices = similarity_scores.argmax(axis=0)
+    max_indices = scores.argmax(axis=0)
     matched_symptoms = set()
     for i in max_indices:
-        if similarity_scores[i] == max_score:
+        if scores[i] == max_score:
             matched_symptoms.update(df.iloc[i]['Symptoms'].split(','))
     return True, matched_symptoms
 
 
-def getDiseaseInfo(keywords):
+def getDiseaseInfo(keywords: str) -> str:
     try:
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:
@@ -173,6 +190,8 @@ def getDiseaseInfo(keywords):
         pass
     return ""
 
+
+# ── Chat state machine ─────────────────────────────────────────────────────────
 
 _DEFAULT_CHAT = {'state': -1, 'name': '', 'age': 0, 'gender': '', 'symptoms': []}
 
@@ -205,7 +224,8 @@ def chat_msg():
     current_state = chat['state']
 
     if current_state == -1:
-        response.append(f"Hi {user_message}, to predict your disease based on symptoms, we need some information about you. Please provide accordingly.")
+        response.append(f"Hi {user_message}, to predict your disease based on symptoms, "
+                        "we need some information about you. Please provide accordingly.")
         chat['name'] = user_message
         chat['state'] = 0
 
@@ -246,7 +266,10 @@ def chat_msg():
             response.append("<b>The following disease may be causing your discomfort</b>")
             response.append(disease)
             if disease_type:
-                response.append(f'<a href="https://www.google.com/search?q={disease_type} disease hospital near me" target="_blank">Search Nearby Hospitals</a>')
+                response.append(
+                    f'<a href="https://www.google.com/search?q={disease_type} disease hospital near me"'
+                    ' target="_blank">Search Nearby Hospitals</a>'
+                )
             chat['state'] = 10
         else:
             chat['symptoms'].extend([s.strip() for s in user_message.split(",")])
