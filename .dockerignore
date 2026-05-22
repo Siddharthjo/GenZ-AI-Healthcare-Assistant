@@ -1,0 +1,10 @@
+.env
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+.flask_sessions/
+notebooks/_make_notebook.py
+*.png
+README.md
